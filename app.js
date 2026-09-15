@@ -22,6 +22,8 @@ async function ensureDb() {
   db = await dbReadyPromise;
   return db;
 }
+
+function openDb() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open('zimbra-mail-db', 1);
     req.onupgradeneeded = () => {
