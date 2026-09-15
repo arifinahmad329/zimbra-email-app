@@ -15,7 +15,13 @@ let db = null;
 // ============================================================
 // INDEXEDDB - penyimpanan lokal untuk mode offline
 // ============================================================
-function openDb() {
+let dbReadyPromise = null;
+async function ensureDb() {
+  if (db) return db;
+  if (!dbReadyPromise) dbReadyPromise = openDb();
+  db = await dbReadyPromise;
+  return db;
+}
   return new Promise((resolve, reject) => {
     const req = indexedDB.open('zimbra-mail-db', 1);
     req.onupgradeneeded = () => {
@@ -35,57 +41,57 @@ function openDb() {
 }
 
 function idbPut(storeName, value) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
+  return ensureDb().then((d) => new Promise((resolve, reject) => {
+    const tx = d.transaction(storeName, 'readwrite');
     tx.objectStore(storeName).put(value);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
-  });
+  }));
 }
 
 function idbGet(storeName, key) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
+  return ensureDb().then((d) => new Promise((resolve, reject) => {
+    const tx = d.transaction(storeName, 'readonly');
     const req = tx.objectStore(storeName).get(key);
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
-  });
+  }));
 }
 
 function idbGetAll(storeName) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
+  return ensureDb().then((d) => new Promise((resolve, reject) => {
+    const tx = d.transaction(storeName, 'readonly');
     const req = tx.objectStore(storeName).getAll();
     req.onsuccess = () => resolve(req.result || []);
     req.onerror = () => reject(req.error);
-  });
+  }));
 }
 
 function idbGetByIndex(storeName, indexName, value) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
+  return ensureDb().then((d) => new Promise((resolve, reject) => {
+    const tx = d.transaction(storeName, 'readonly');
     const req = tx.objectStore(storeName).index(indexName).getAll(value);
     req.onsuccess = () => resolve(req.result || []);
     req.onerror = () => reject(req.error);
-  });
+  }));
 }
 
 function idbDelete(storeName, key) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
+  return ensureDb().then((d) => new Promise((resolve, reject) => {
+    const tx = d.transaction(storeName, 'readwrite');
     tx.objectStore(storeName).delete(key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
-  });
+  }));
 }
 
 function idbClearAll() {
-  return new Promise((resolve) => {
+  return ensureDb().then((d) => new Promise((resolve) => {
     const names = ['folders', 'messages', 'messageDetail', 'outbox', 'session'];
-    const tx = db.transaction(names, 'readwrite');
+    const tx = d.transaction(names, 'readwrite');
     names.forEach((n) => tx.objectStore(n).clear());
     tx.oncomplete = () => resolve();
-  });
+  }));
 }
 
 // ============================================================
@@ -170,6 +176,7 @@ async function doLogin() {
     document.getElementById('drawer-server').textContent = server;
     await loadFolders();
     showScreen('screen-inbox');
+    autoSyncAllFolders(); // jalan di belakang layar, tidak perlu ditunggu
   } catch (e) {
     errEl.textContent = e.message === 'OFFLINE'
       ? 'Tidak ada koneksi internet. Login pertama kali membutuhkan koneksi.'
@@ -189,6 +196,7 @@ async function tryRestoreSession() {
     document.getElementById('drawer-server').textContent = saved.server;
     await loadFolders();
     showScreen('screen-inbox');
+    autoSyncAllFolders(); // jalan di belakang layar, tidak perlu ditunggu
     return true;
   }
   return false;
@@ -324,6 +332,119 @@ function renderMsgItem(m) {
 }
 
 document.getElementById('btn-refresh').addEventListener('click', () => loadMessages(true));
+document.getElementById('btn-sync-all').addEventListener('click', () => {
+  closeDrawer();
+  syncFolderFull(currentFolder);
+});
+
+async function syncFolderFull(folder) {
+  if (!navigator.onLine) { toast('Sambungkan internet dulu untuk mengunduh semua pesan'); return; }
+  const progEl = document.getElementById('sync-progress');
+  progEl.style.display = 'block';
+  progEl.textContent = 'Mengambil daftar pesan di "' + folder.name + '"...';
+
+  // 1) Kumpulkan semua ID pesan di folder ini (looping per 30)
+  let allHeaders = [];
+  let offset = 0;
+  while (true) {
+    let data;
+    try {
+      data = await callBackend('listMessages', {
+        server: session.server, authToken: session.authToken,
+        folderId: folder.id, folderName: folder.name, offset
+      });
+    } catch (e) {
+      progEl.textContent = 'Gagal: ' + e.message;
+      setTimeout(() => { progEl.style.display = 'none'; }, 3000);
+      return;
+    }
+    const batch = data.messages.map((m) => ({ ...m, folderId: folder.id }));
+    for (const m of batch) await idbPut('messages', m);
+    allHeaders = allHeaders.concat(batch);
+    if (batch.length < 30) break;
+    offset += 30;
+    progEl.textContent = 'Mengambil daftar pesan... (' + allHeaders.length + ' ditemukan)';
+  }
+
+  // 2) Unduh isi lengkap tiap pesan yang belum tersimpan
+  let done = 0;
+  let skipped = 0;
+  for (const h of allHeaders) {
+    const existing = await idbGet('messageDetail', h.id);
+    if (existing) { skipped++; done++; continue; }
+    try {
+      const data = await callBackend('getMessage', { server: session.server, authToken: session.authToken, id: h.id });
+      await idbPut('messageDetail', data.message);
+    } catch (e) {
+      // lewati pesan ini kalau gagal, lanjut ke berikutnya
+    }
+    done++;
+    if (done % 5 === 0 || done === allHeaders.length) {
+      progEl.textContent = 'Menyimpan untuk offline: ' + done + ' / ' + allHeaders.length + ' pesan...';
+    }
+  }
+
+  progEl.textContent = 'Selesai! ' + allHeaders.length + ' pesan di "' + folder.name + '" siap dibaca offline.';
+  setTimeout(() => { progEl.style.display = 'none'; }, 4000);
+}
+
+// ============================================================
+// SINKRONISASI OTOMATIS SEMUA FOLDER (jalan sendiri di belakang layar)
+// ============================================================
+let autoSyncRunning = false;
+async function autoSyncAllFolders() {
+  if (autoSyncRunning || !navigator.onLine) return;
+  autoSyncRunning = true;
+  try {
+    const folders = await idbGetAll('folders');
+    // dahulukan Inbox supaya yang paling penting selesai duluan
+    folders.sort((a, b) => (a.name.toLowerCase() === 'inbox' ? -1 : b.name.toLowerCase() === 'inbox' ? 1 : 0));
+    for (const f of folders) {
+      if (!navigator.onLine) break; // berhenti kalau koneksi putus di tengah jalan
+      await syncFolderFullSilent(f);
+    }
+  } finally {
+    autoSyncRunning = false;
+  }
+}
+
+// Sama seperti syncFolderFull, tapi tanpa mengganggu (dipakai untuk proses otomatis)
+async function syncFolderFullSilent(folder) {
+  const progEl = document.getElementById('sync-progress');
+  let offset = 0;
+  let allHeaders = [];
+  while (true) {
+    let data;
+    try {
+      data = await callBackend('listMessages', {
+        server: session.server, authToken: session.authToken,
+        folderId: folder.id, folderName: folder.name, offset
+      });
+    } catch (e) { return; } // kalau gagal, lewati folder ini, lanjut folder lain nanti
+
+    const batch = data.messages.map((m) => ({ ...m, folderId: folder.id }));
+    for (const m of batch) await idbPut('messages', m);
+    allHeaders = allHeaders.concat(batch);
+    if (batch.length < 30) break;
+    offset += 30;
+  }
+
+  let done = 0;
+  for (const h of allHeaders) {
+    const existing = await idbGet('messageDetail', h.id);
+    if (existing) { done++; continue; }
+    try {
+      const data = await callBackend('getMessage', { server: session.server, authToken: session.authToken, id: h.id });
+      await idbPut('messageDetail', data.message);
+    } catch (e) { /* lewati, lanjut pesan berikutnya */ }
+    done++;
+    if (done % 5 === 0 || done === allHeaders.length) {
+      progEl.style.display = 'block';
+      progEl.textContent = 'Menyinkronkan otomatis: ' + folder.name + ' (' + done + '/' + allHeaders.length + ')';
+    }
+  }
+  progEl.style.display = 'none';
+}
 
 // ============================================================
 // PENCARIAN (lintas semua folder)
@@ -555,7 +676,7 @@ function escapeHtml(s) {
 // ============================================================
 (async function init() {
   updateOnlineStatus();
-  db = await openDb();
+  ensureDb().catch(() => {}); // mulai siapkan di awal, tidak perlu ditunggu di sini
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
