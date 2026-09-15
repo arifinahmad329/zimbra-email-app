@@ -259,7 +259,7 @@ async function loadMessages(reset) {
     if (navigator.onLine) {
       const data = await callBackend('listMessages', {
         server: session.server, authToken: session.authToken,
-        folderId: currentFolder.id, offset: currentOffset
+        folderId: currentFolder.id, folderName: currentFolder.name, offset: currentOffset
       });
       messages = data.messages.map((m) => ({ ...m, folderId: currentFolder.id }));
       for (const m of messages) await idbPut('messages', m);
