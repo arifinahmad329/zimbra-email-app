@@ -40,9 +40,10 @@
   }
   .appbar h1{font-size:17px; margin:0; font-weight:600; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .icon-btn{
-    background:none; border:none; padding:6px; cursor:pointer;
-    color:var(--text); display:flex; align-items:center; justify-content:center;
-    border-radius:8px;
+    background:none; border:none; padding:0; cursor:pointer;
+    color:var(--text); display:inline-flex; align-items:center; justify-content:center;
+    border-radius:8px; min-width:44px; min-height:44px; font-size:19px;
+    flex-shrink:0;
   }
   .icon-btn:active{background:var(--accent-soft);}
 
@@ -220,8 +221,13 @@
       <button class="icon-btn" id="btn-open-drawer">☰</button>
       <h1 id="folder-title">Inbox</h1>
       <span class="offline-pill">OFFLINE</span>
+      <button class="icon-btn" id="btn-search">🔍</button>
       <button class="icon-btn" id="btn-refresh">⟳</button>
     </header>
+    <div id="search-bar" style="display:none; padding:10px 16px; border-bottom:1px solid var(--border); background:var(--surface);">
+      <input id="search-input" type="text" placeholder="Cari nama, alamat, atau subjek..." style="width:100%; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius); font-size:14.5px;">
+    </div>
+    <div id="sync-progress" style="display:none; padding:10px 16px; background:var(--accent-soft); color:var(--accent); font-size:13px; font-weight:600;"></div>
     <div id="msg-list"></div>
     <button class="fab" id="btn-compose">✎</button>
   </section>
@@ -243,6 +249,9 @@
       <div class="srv" id="drawer-server">-</div>
     </div>
     <div id="folder-list"></div>
+    <div class="drawer-footer" style="border-top:none; padding-top:0;">
+      <button class="link-danger" id="btn-sync-all" style="color:var(--accent);">⬇️ Unduh Semua Pesan Folder Ini</button>
+    </div>
     <div class="drawer-footer">
       <button class="link-danger" id="btn-logout">Keluar</button>
     </div>
