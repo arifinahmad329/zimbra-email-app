@@ -206,19 +206,29 @@ document.getElementById('btn-logout').addEventListener('click', async () => {
 // FOLDERS
 // ============================================================
 async function loadFolders() {
+  // Tampilkan dulu dari cache lokal (instan, tidak perlu tunggu jaringan)
+  var cached = await idbGetAll('folders');
+  if (cached.length) {
+    renderFolderList(cached);
+    if (!currentFolder) {
+      const inbox = cached.find((f) => f.name.toLowerCase() === 'inbox') || cached[0];
+      openFolder(inbox);
+    }
+  }
+
   try {
     if (navigator.onLine) {
       const data = await callBackend('getFolders', { server: session.server, authToken: session.authToken });
       for (const f of data.folders) await idbPut('folders', f);
+      const fresh = await idbGetAll('folders');
+      renderFolderList(fresh);
+      if (!currentFolder && fresh.length) {
+        const inbox = fresh.find((f) => f.name.toLowerCase() === 'inbox') || fresh[0];
+        openFolder(inbox);
+      }
     }
   } catch (e) {
     toast('Gagal ambil folder: ' + e.message);
-  }
-  const folders = await idbGetAll('folders');
-  renderFolderList(folders);
-  if (!currentFolder && folders.length) {
-    const inbox = folders.find((f) => f.name.toLowerCase() === 'inbox') || folders[0];
-    openFolder(inbox);
   }
 }
 
@@ -247,14 +257,23 @@ function openFolder(f) {
 // ============================================================
 async function loadMessages(reset) {
   const listEl = document.getElementById('msg-list');
+  if (reset) currentOffset = 0;
+
+  // 1) Tampilkan dulu dari cache lokal supaya instan
+  let cachedMsgs = await idbGetByIndex('messages', 'folderId', currentFolder.id);
+  cachedMsgs.sort((a, b) => parseInt(b.date, 10) - parseInt(a.date, 10));
   if (reset) {
-    listEl.innerHTML = '<div class="spinner"></div>';
-    currentOffset = 0;
+    listEl.innerHTML = '';
+    if (cachedMsgs.length) {
+      cachedMsgs.forEach((m) => listEl.appendChild(renderMsgItem(m)));
+    } else {
+      listEl.innerHTML = '<div class="spinner"></div>';
+    }
   }
 
+  // 2) Ambil versi terbaru dari server di belakang layar
   let messages = [];
   let fromNetwork = false;
-
   try {
     if (navigator.onLine) {
       const data = await callBackend('listMessages', {
@@ -267,25 +286,22 @@ async function loadMessages(reset) {
     }
   } catch (e) { toast('Gagal ambil pesan: ' + e.message); }
 
-  if (!fromNetwork) {
-    messages = await idbGetByIndex('messages', 'folderId', currentFolder.id);
-    messages.sort((a, b) => parseInt(b.date, 10) - parseInt(a.date, 10));
-  }
-
-  if (reset) listEl.innerHTML = '';
-  if (messages.length === 0 && reset) {
-    listEl.innerHTML = `<div class="empty-state"><div class="big">Tidak ada pesan</div>Folder ini kosong${navigator.onLine ? '' : ' (mode offline)'}.</div>`;
-    return;
-  }
-
-  messages.forEach((m) => listEl.appendChild(renderMsgItem(m)));
-
-  if (fromNetwork && messages.length >= 30) {
-    const more = document.createElement('div');
-    more.className = 'load-more';
-    more.textContent = 'Muat lebih banyak';
-    more.addEventListener('click', () => { currentOffset += 30; more.remove(); loadMessages(false); });
-    listEl.appendChild(more);
+  if (fromNetwork) {
+    if (reset) listEl.innerHTML = '';
+    if (messages.length === 0 && reset) {
+      listEl.innerHTML = `<div class="empty-state"><div class="big">Tidak ada pesan</div>Folder ini kosong.</div>`;
+      return;
+    }
+    messages.forEach((m) => listEl.appendChild(renderMsgItem(m)));
+    if (messages.length >= 30) {
+      const more = document.createElement('div');
+      more.className = 'load-more';
+      more.textContent = 'Muat lebih banyak';
+      more.addEventListener('click', () => { currentOffset += 30; more.remove(); loadMessages(false); });
+      listEl.appendChild(more);
+    }
+  } else if (reset && cachedMsgs.length === 0) {
+    listEl.innerHTML = `<div class="empty-state"><div class="big">Tidak ada pesan</div>Folder ini kosong (mode offline).</div>`;
   }
 }
 
@@ -308,6 +324,65 @@ function renderMsgItem(m) {
 }
 
 document.getElementById('btn-refresh').addEventListener('click', () => loadMessages(true));
+
+// ============================================================
+// PENCARIAN (lintas semua folder)
+// ============================================================
+let searchMode = false;
+const btnSearch = document.getElementById('btn-search');
+const searchBar = document.getElementById('search-bar');
+const searchInput = document.getElementById('search-input');
+
+btnSearch.addEventListener('click', () => {
+  searchMode = !searchMode;
+  searchBar.style.display = searchMode ? 'block' : 'none';
+  if (searchMode) {
+    searchInput.value = '';
+    searchInput.focus();
+  } else {
+    document.getElementById('folder-title').textContent = currentFolder.name;
+    loadMessages(true); // balik ke tampilan folder biasa
+  }
+});
+
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doSearch(searchInput.value.trim());
+});
+
+async function doSearch(keyword) {
+  const listEl = document.getElementById('msg-list');
+  if (!keyword) return;
+  document.getElementById('folder-title').textContent = 'Hasil: "' + keyword + '"';
+  listEl.innerHTML = '<div class="spinner"></div>';
+
+  let results = [];
+  if (navigator.onLine) {
+    try {
+      const data = await callBackend('search', { server: session.server, authToken: session.authToken, keyword });
+      results = data.messages;
+    } catch (e) {
+      toast('Gagal mencari: ' + e.message);
+    }
+  } else {
+    // Offline: cari di semua pesan yang sudah tersimpan di HP
+    const all = await idbGetAll('messages');
+    const kw = keyword.toLowerCase();
+    results = all.filter((m) =>
+      (m.subject || '').toLowerCase().includes(kw) ||
+      (m.from && (m.from.name || '').toLowerCase().includes(kw)) ||
+      (m.from && (m.from.address || '').toLowerCase().includes(kw)) ||
+      (m.snippet || '').toLowerCase().includes(kw)
+    );
+    toast('Mode offline: mencari di pesan yang sudah tersimpan saja');
+  }
+
+  listEl.innerHTML = '';
+  if (results.length === 0) {
+    listEl.innerHTML = `<div class="empty-state"><div class="big">Tidak ditemukan</div>Tidak ada pesan yang cocok dengan "${escapeHtml(keyword)}".</div>`;
+    return;
+  }
+  results.forEach((m) => listEl.appendChild(renderMsgItem(m)));
+}
 
 // ============================================================
 // DETAIL PESAN
