@@ -2,7 +2,7 @@
 // tetap bisa DIBUKA walau tidak ada internet. Data email disimpan
 // terpisah di IndexedDB (lihat app.js), bukan di sini.
 
-const CACHE_NAME = 'zimbra-mail-shell-v2';
+const CACHE_NAME = 'zimbra-mail-shell-v3';
 const SHELL_FILES = [
   './',
   './index.html',
