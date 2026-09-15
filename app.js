@@ -2,7 +2,7 @@
 // KONFIGURASI
 // ============================================================
 // GANTI dengan URL Web App Google Apps Script kamu setelah deploy Code.gs
-const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbzz-xF0hZk-O2s9oMRxq72ZhJeROjB32K17T176nVvHj9aDHh6oGdW7VGm80W87c1EM/exec';
+const BACKEND_URL = 'PASTE_URL_WEB_APP_GOOGLE_APPS_SCRIPT_DI_SINI';
 
 // ============================================================
 // STATE
@@ -212,7 +212,7 @@ async function loadFolders() {
       for (const f of data.folders) await idbPut('folders', f);
     }
   } catch (e) {
-    // gagal ambil dari server, tetap lanjut pakai cache lokal
+    toast('Gagal ambil folder: ' + e.message);
   }
   const folders = await idbGetAll('folders');
   renderFolderList(folders);
@@ -265,7 +265,7 @@ async function loadMessages(reset) {
       for (const m of messages) await idbPut('messages', m);
       fromNetwork = true;
     }
-  } catch (e) { /* jatuh ke cache lokal di bawah */ }
+  } catch (e) { toast('Gagal ambil pesan: ' + e.message); }
 
   if (!fromNetwork) {
     messages = await idbGetByIndex('messages', 'folderId', currentFolder.id);
