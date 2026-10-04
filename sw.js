@@ -5,7 +5,7 @@
 // PENTING: naikkan angka versi di bawah (v4 -> v5, dst.) setiap kali
 // kamu mengubah file aplikasi, supaya cache lama dibuang.
 
-const CACHE_NAME = 'zimbra-mail-shell-v4';
+const CACHE_NAME = 'zimbra-mail-shell-v5';
 const SHELL_FILES = [
   './',
   './index.html',
@@ -18,8 +18,14 @@ const SHELL_FILES = [
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) =>
-      // satu file gagal tidak menggagalkan seluruh instalasi
-      Promise.all(SHELL_FILES.map((f) => cache.add(f).catch(() => {})))
+      // cache:'reload' = selalu ambil dari server, bukan dari cache HTTP browser
+      // (GitHub Pages menyimpan file ~10 menit). Satu file gagal tidak
+      // menggagalkan seluruh instalasi.
+      Promise.all(SHELL_FILES.map((f) =>
+        fetch(f, { cache: 'reload' })
+          .then((r) => (r.ok ? cache.put(f, r) : null))
+          .catch(() => {})
+      ))
     )
   );
   self.skipWaiting();
@@ -46,7 +52,7 @@ self.addEventListener('fetch', (event) => {
   // sambil mengambil versi terbaru untuk pembukaan berikutnya.
   event.respondWith(
     caches.match(req, { ignoreSearch: true }).then((cached) => {
-      const network = fetch(req)
+      const network = fetch(req.url, { cache: 'reload' })
         .then((resp) => {
           if (resp && resp.ok) {
             const copy = resp.clone(); // clone SEBELUM resp dipakai
